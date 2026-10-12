@@ -3037,6 +3037,9 @@ import { assert } from '../node_modules/chai/index.js';
         describe('impl', function () {
             describe('inliner', function () {
                 const NO_BASE_URL = null;
+                const fontUrl =
+                    "file:///D:/My%20Fonts/win-unpacked(86)/John's%20%231%25.woff2";
+                const fontCss = `url("${fontUrl}")`;
 
                 it('should process urls', function () {
                     const should = domtoimage.impl.inliner.shouldProcess;
@@ -3062,6 +3065,63 @@ import { assert } from '../node_modules/chai/index.js';
                 it('should ignore data urls', function () {
                     const parse = domtoimage.impl.inliner.impl.readUrls;
                     assert.deepEqual(parse('url(foo.com), url(data:AAA)'), ['foo.com']);
+                });
+
+                it('should parse a file URL with parentheses, an apostrophe and percent encoding', function () {
+                    const parse = domtoimage.impl.inliner.impl.readUrls;
+                    assert.deepEqual(parse(fontCss), [fontUrl]);
+                    assert.deepEqual(parse("url('fonts(86)/font.woff2')"), [
+                        'fonts(86)/font.woff2',
+                    ]);
+                });
+
+                it('should preserve escaped characters in URLs', function () {
+                    const parse = domtoimage.impl.inliner.impl.readUrls;
+                    assert.deepEqual(parse(String.raw`url("a\"(86)/font.woff2")`), [
+                        String.raw`a\"(86)/font.woff2`,
+                    ]);
+                    assert.deepEqual(parse(String.raw`url('a\'(86)/font.woff2')`), [
+                        String.raw`a\'(86)/font.woff2`,
+                    ]);
+                    assert.deepEqual(parse(String.raw`url(a\(86\)/font.woff2)`), [
+                        String.raw`a\(86\)/font.woff2`,
+                    ]);
+                });
+
+                it('should exclude surrounding whitespace from URLs', function () {
+                    const parse = domtoimage.impl.inliner.impl.readUrls;
+                    assert.deepEqual(
+                        parse('url( \n "fonts(86)/a.woff2" \n ), url( b.woff2 )'),
+                        ['fonts(86)/a.woff2', 'b.woff2']
+                    );
+                });
+
+                it('should not parse malformed quoted URLs as unquoted URLs', function () {
+                    const parse = domtoimage.impl.inliner.impl.readUrls;
+                    const should = domtoimage.impl.inliner.shouldProcess;
+                    [
+                        'url("font.woff2)',
+                        "url('font.woff2)",
+                        'url("font.woff2\')',
+                        'url(\'font.woff2")',
+                    ].forEach(function (css) {
+                        assert.deepEqual(parse(css), [], css);
+                        assert.isFalse(should(css), css);
+                    });
+                });
+
+                it('should preserve non-ASCII spaces in unquoted URLs', function () {
+                    const parse = domtoimage.impl.inliner.impl.readUrls;
+                    assert.deepEqual(
+                        parse(
+                            'url(fonts/my\u00a0font.woff2), url(fonts/字\u3000体.woff2), url(\u00a0font.woff2\u3000)'
+                        ),
+                        [
+                            'fonts/my\u00a0font.woff2',
+                            'fonts/字\u3000体.woff2',
+                            '\u00a0font.woff2\u3000',
+                        ]
+                    );
                 });
 
                 it('should ignore same-document fragment urls', function () {
@@ -3102,6 +3162,22 @@ import { assert } from '../node_modules/chai/index.js';
                     );
                     assert.deepEqual(parse(''), []);
                     assert.deepEqual(parse(undefined), []);
+                });
+
+                it('should rewrite quoted fragment URLs containing parentheses', function () {
+                    const rewrite = domtoimage.impl.util.rewriteFragmentUrls;
+                    const page = document.URL.split('#')[0];
+                    const ids = [];
+                    assert.equal(
+                        rewrite(
+                            `url("${page}#mask(86)") url('#clip(86)') url("icon(86).svg#m")`,
+                            function (id) {
+                                ids.push(id);
+                            }
+                        ),
+                        'url("#mask(86)") url("#clip(86)") url("icon(86).svg#m")'
+                    );
+                    assert.deepEqual(ids, ['mask(86)', 'clip(86)']);
                 });
 
                 it('should build a decent escaped regex urls', function () {
@@ -3202,6 +3278,43 @@ import { assert } from '../node_modules/chai/index.js';
                         })
                         .then(done)
                         .catch(done);
+                });
+
+                it('should inline a file URL with parentheses, an apostrophe and percent encoding', function () {
+                    const requested = [];
+                    return domtoimage.impl.inliner
+                        .inlineAll(
+                            fontCss,
+                            NO_BASE_URL,
+                            domtoimage.ResourceType.FONT,
+                            function (url, type) {
+                                requested.push(url);
+                                assert.equal(type, domtoimage.ResourceType.FONT);
+                                return Promise.resolve('data:font/woff2;base64,AAA');
+                            }
+                        )
+                        .then(function (result) {
+                            assert.deepEqual(requested, [fontUrl]);
+                            assert.equal(result, 'url("data:font/woff2;base64,AAA")');
+                        });
+                });
+
+                it('should inline URLs with surrounding whitespace', function () {
+                    return domtoimage.impl.inliner
+                        .inlineAll(
+                            'url( "fonts(86)/a.woff2" ), url( b.woff2 )',
+                            NO_BASE_URL,
+                            undefined,
+                            function () {
+                                return Promise.resolve('data:font/woff2;base64,AAA');
+                            }
+                        )
+                        .then(function (result) {
+                            assert.equal(
+                                result,
+                                'url("data:font/woff2;base64,AAA"), url(data:font/woff2;base64,AAA)'
+                            );
+                        });
                 });
             });
 
@@ -3831,6 +3944,30 @@ import { assert } from '../node_modules/chai/index.js';
                         })
                         .then(done)
                         .catch(done);
+                });
+
+                it('should resolve external stylesheet font URLs containing parentheses', function () {
+                    const css =
+                        '@font-face { font-family: "Parentheses"; src: ' +
+                        'url("fonts(86)/a.woff2?v=4.7.0") format("woff2"), ' +
+                        "url('fonts(86)/b.woff') format('woff'), " +
+                        'url(fonts/my\u00a0font.woff2) format("woff2"), ' +
+                        'url(font.ttf) format("truetype"); }';
+                    return readAllWithExternalSheet(
+                        { loadExternalStyleSheet: true },
+                        css
+                    ).then(function (sources) {
+                        assert.equal(sources.length, 1);
+                        assert.deepEqual(
+                            domtoimage.impl.inliner.impl.readUrls(sources[0]),
+                            [
+                                'https://fonts.example.com/fonts(86)/a.woff2?v=4.7.0',
+                                'https://fonts.example.com/fonts(86)/b.woff',
+                                'https://fonts.example.com/fonts/my%C2%A0font.woff2',
+                                'https://fonts.example.com/font.ttf',
+                            ]
+                        );
+                    });
                 });
 
                 it('an unreadable cross-origin sheet is skipped when loadExternalStyleSheet is off — issue #243', function (done) {

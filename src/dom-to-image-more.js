@@ -1640,12 +1640,13 @@
         // Replace each same-document `url(...)` in a CSS value with `url("#id")`
         // and call onId(id) for it. Other urls are left as they are.
         function rewriteFragmentUrls(value, onId) {
-            const pattern = /url\(\s*(["']?)((?:\\.|[^\\)])+)\1\s*\)/g;
+            const pattern = newCssUrlRegex();
             let result = '';
             let last = 0;
             let match;
             while ((match = pattern.exec(value)) !== null) {
-                const id = getSameDocumentFragmentId(match[2].replace(/\\(.)/g, '$1'));
+                const url = match[1] ?? match[2] ?? match[3];
+                const id = getSameDocumentFragmentId(url.replace(/\\(.)/g, '$1'));
                 if (id !== null) {
                     onId(id);
                     result += value.slice(last, match.index);
@@ -2177,9 +2178,15 @@
         }
     }
 
-    function newInliner() {
-        const URL_REGEX = /url\(\s*(["']?)((?:\\.|[^\\)])+)\1\s*\)/gm;
+    // Quoted URLs may contain parentheses. Keep the unquoted branch separate so
+    // an unmatched quote cannot be consumed as part of an unquoted URL instead.
+    // Use CSS whitespace only: non-ASCII spaces are valid URL characters.
+    // Return a fresh regex for each scan to avoid sharing global lastIndex state.
+    function newCssUrlRegex() {
+        return /url\([\t\n\f\r ]*(?:"((?:\\.|[^"\\\r\n])+)"|'((?:\\.|[^'\\\r\n])+)'|((?:\\.|[^\\\t\n\f\r "'()])+))[\t\n\f\r ]*\)/gm;
+    }
 
+    function newInliner() {
         return {
             inlineAll: inlineAll,
             shouldProcess: shouldProcess,
@@ -2191,14 +2198,15 @@
         };
 
         function shouldProcess(string) {
-            return string.search(URL_REGEX) !== -1;
+            return string.search(newCssUrlRegex()) !== -1;
         }
 
         function readUrls(string) {
             const result = [];
+            const pattern = newCssUrlRegex();
             let match;
-            while ((match = URL_REGEX.exec(string)) !== null) {
-                result.push(match[2]);
+            while ((match = pattern.exec(string)) !== null) {
+                result.push(match[1] ?? match[2] ?? match[3]);
             }
             // A same-document ref (`url(#m)` on a mask or clip-path) is not a
             // resource. Fetching it would download the page itself.
@@ -2212,7 +2220,10 @@
         }
 
         function urlAsRegex(urlValue) {
-            return new RegExp(`url\\((["']?)(${util.escape(urlValue)})\\1\\)`, 'gm');
+            return new RegExp(
+                `url\\([\\t\\n\\f\\r ]*(["']?)(${util.escape(urlValue)})\\1[\\t\\n\\f\\r ]*\\)`,
+                'gm'
+            );
         }
 
         function inline(string, url, baseUrl, type, get) {
@@ -2424,12 +2435,18 @@
             // re-parsed sheet has no href of its own to resolve them against later.
             function absolutizeUrls(cssText, href) {
                 return cssText.replace(
-                    /url\((['"]?)([^'")]+)\1\)/g,
-                    function (match, quote, rawUrl) {
-                        const url = rawUrl.trim();
+                    newCssUrlRegex(),
+                    function (match, doubleQuoted, singleQuoted, unquoted) {
+                        const url = doubleQuoted ?? singleQuoted ?? unquoted;
                         if (util.isDataUrl(url) || /^[a-z][a-z0-9+.-]*:/i.test(url)) {
                             return match;
                         }
+                        const quote =
+                            doubleQuoted !== undefined
+                                ? '"'
+                                : singleQuoted !== undefined
+                                  ? "'"
+                                  : '';
                         return `url(${quote}${util.resolveUrl(url, href)}${quote})`;
                     }
                 );
